@@ -1,0 +1,1003 @@
+import json
+from pathlib import Path
+import os
+import shutil
+import sys
+import zipfile
+from PyQt6.QtCore import *
+from PyQt6.QtGui import *
+from PyQt6.QtWidgets import *
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+import VSim
+
+
+base_dir = Path(__file__).resolve().parent
+icon_path = base_dir / "logo.svg"
+
+app = QApplication(sys.argv)
+
+app.setWindowIcon(QIcon(str(icon_path)))
+
+def save_project():
+  file_path, _ = QFileDialog.getSaveFileName(
+      maindaw,
+      "Save RealSynth Project",
+      "untitled.json",
+      "RealSynth Project (*.json);;All Files (*)",
+  )
+  if not file_path:
+    return
+
+  notes = [item for item in roll_scene.items() if isinstance(item, NoteItem)]
+  notes.sort(key=lambda n: (n.x(), n.y()))
+  note_to_idx = {note: i for i, note in enumerate(notes)}
+
+  notes_data = []
+  for note in notes:
+    notes_data.append({
+        "x": note.x(),
+        "y": note.y(),
+        "width": note.rect().width(),
+        "word": note.word,
+        "tone": note.tone,
+    })
+
+  transitions = [
+      item for item in roll_scene.items() if isinstance(item, TransitionLine)
+  ]
+  transitions_data = []
+  for t in transitions:
+    if t.note_a in note_to_idx and t.note_b in note_to_idx:
+      transitions_data.append({
+          "from_note": note_to_idx[t.note_a],
+          "to_note": note_to_idx[t.note_b],
+          "mode": t.mode,
+      })
+
+  project_data = {
+      "version": "0.0.1",
+      "singer": {
+          "singerdir": current_singer_dir,
+          "language": singerlang.currentText(),
+          "method": singermethod.currentText(),
+          "volume": singervol.value(),
+          "clarity": singerclar.value(),
+      },
+      "notes": notes_data,
+      "transitions": transitions_data,
+  }
+
+
+  with open(file_path, "w", encoding="utf-8") as f:
+    json.dump(project_data, f, indent=2)
+  maindaw.setWindowTitle(f"RealSynth v0.0.1 Alpha - {file_path}")
+def open_project():
+  file_path, _ = QFileDialog.getOpenFileName(
+      maindaw,
+      "Open RealSynth Project",
+      "",
+      "RealSynth Project (*.json);;All Files (*)",
+  )
+  if not file_path:
+    return
+
+  with open(file_path, "r", encoding="utf-8") as f:
+    project_data = json.load(f)
+
+  for item in list(roll_scene.items()):
+    if isinstance(item, (NoteItem, TransitionLine)):
+      roll_scene.removeItem(item)
+
+  singer = project_data.get("singer", {})
+  apply_voicebank(singer.get("singerdir", ""))
+  if "language" in singer:
+    singerlang.setCurrentText(singer["language"])
+  if "method" in singer:
+    singermethod.setCurrentText(singer["method"])
+  if "volume" in singer:
+    singervol.setValue(singer["volume"])
+  if "clarity" in singer:
+    singerclar.setValue(singer["clarity"])
+
+  notes_data = project_data.get("notes", [])
+  if notes_data:
+    max_x = max(n["x"] + n["width"] for n in notes_data)
+    needed_steps = int(max_x // STEP_WIDTH) + 32
+    if needed_steps > drawn_steps:
+      extend_timeline(needed_steps)
+
+  created_notes = []
+  for n in notes_data:
+    note = NoteItem(
+        n["x"],
+        n["y"],
+        n["width"],
+        ROW_HEIGHT,
+        word=n.get("word", "a"),
+        tone=n.get("tone", "Normal"),
+    )
+    roll_scene.addItem(note)
+    created_notes.append(note)
+
+  for t in project_data.get("transitions", []):
+    idx_a = t["from_note"]
+    idx_b = t["to_note"]
+    if 0 <= idx_a < len(created_notes) and 0 <= idx_b < len(created_notes):
+      note_a = created_notes[idx_a]
+      note_b = created_notes[idx_b]
+      line = TransitionLine(note_a, note_b, mode=t.get("mode", "curve"))
+      roll_scene.addItem(line)
+      note_a.transitions.append(line)
+      note_b.transitions.append(line)
+
+  refresh_note_inspector()
+  maindaw.setWindowTitle(f"RealSynth v0.0.1 Alpha - {file_path}")
+def apply_voicebank(singer_folder):
+  global current_singer_dir
+  if not singer_folder or not os.path.isdir(singer_folder):
+    current_singer_dir = ""
+    singerlabel.setText("No Singer")
+    singerportraitframe.setPixmap(QPixmap())
+    return
+
+  current_singer_dir = singer_folder
+  singer_name = os.path.basename(os.path.normpath(singer_folder))
+  singerlabel.setText(singer_name)
+
+  icon_path = os.path.join(singer_folder, "singericon.png")
+  if os.path.isfile(icon_path):
+    singerportraitframe.setPixmap(QPixmap(icon_path))
+  else:
+    singerportraitframe.setPixmap(QPixmap())
+def load_voicebank():
+  choice = QMessageBox.question(
+      maindaw,
+      "Install / Load Voicebank",
+      "Install from a .zip file?\n\nClick 'Yes' for a .zip archive, or 'No' to select a singer folder.",
+      QMessageBox.StandardButton.Yes
+      | QMessageBox.StandardButton.No
+      | QMessageBox.StandardButton.Cancel,
+  )
+  if choice == QMessageBox.StandardButton.Cancel:
+    return
+
+  if choice == QMessageBox.StandardButton.Yes:
+    zip_path, _ = QFileDialog.getOpenFileName(
+        maindaw, "Select Voicebank ZIP", "", "ZIP Archives (*.zip)"
+    )
+    if not zip_path:
+      return
+    singer_name = os.path.splitext(os.path.basename(zip_path))[0]
+    dest_dir = os.path.join(SINGERS_ROOT, singer_name)
+    os.makedirs(dest_dir, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+      zf.extractall(dest_dir)
+    nested = os.path.join(dest_dir, singer_name)
+    if os.path.isdir(nested):
+      dest_dir = nested
+  else:
+    src_dir = QFileDialog.getExistingDirectory(
+        maindaw, "Select Singer Folder"
+    )
+    if not src_dir:
+      return
+    singer_name = os.path.basename(os.path.normpath(src_dir))
+    dest_dir = os.path.join(SINGERS_ROOT, singer_name)
+    if os.path.abspath(src_dir) != os.path.abspath(dest_dir):
+      shutil.copytree(src_dir, dest_dir, dirs_exist_ok=True)
+
+  apply_voicebank(dest_dir)
+  QMessageBox.information(
+      maindaw,
+      "Voicebank Installed",
+      f"Installed '{singer_name}' to:\n{dest_dir}",
+  )
+
+#i hate these
+project_data = {}
+SINGERS_ROOT = os.path.join(os.path.expanduser("~"), "RealSynth", "Singers")
+os.makedirs(SINGERS_ROOT, exist_ok=True)
+current_singer_dir = ""
+NOTES = ["B", "A#", "A", "G#", "G", "F#", "F", "E", "D#", "D", "C#", "C"]
+ROW_HEIGHT = 24
+TOTAL_ROWS = 84
+STEP_WIDTH = 20
+STEPS_PER_BEAT = 4
+STEPS_PER_BAR = 16
+TOTAL_STEPS = 128
+ROLL_WIDTH = TOTAL_STEPS * STEP_WIDTH
+drawn_steps = 0
+RESIZE_MARGIN = 8
+class TransitionLine(QGraphicsPathItem):
+
+  def __init__(self, note_a, note_b, mode="curve"):
+    super().__init__()
+    self.note_a = note_a
+    self.note_b = note_b
+    self.mode = mode
+    self.setZValue(1)
+    self.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.update_path()
+
+  def update_path(self):
+    x1 = self.note_a.x() + self.note_a.rect().width()
+    y1 = self.note_a.y() + (self.note_a.rect().height() / 2)
+    x2 = self.note_b.x()
+    y2 = self.note_b.y() + (self.note_b.rect().height() / 2)
+
+    path = QPainterPath(QPointF(x1, y1))
+
+    if self.mode == "curve":
+      mid_x = (x1 + x2) / 2
+      path.cubicTo(QPointF(mid_x, y1), QPointF(mid_x, y2), QPointF(x2, y2))
+      pen = QPen(QColor("#00e08f"), 2.5)
+    else:
+      path.lineTo(QPointF(x2, y2))
+      pen = QPen(QColor("#ffaa00"), 2.5, Qt.PenStyle.DashLine)
+
+    self.setPen(pen)
+    self.setPath(path)
+
+  def shape(self):
+    stroker = QPainterPathStroker()
+    stroker.setWidth(10)
+    return stroker.createStroke(self.path())
+
+  def toggle_mode(self):
+    self.mode = "line" if self.mode == "curve" else "curve"
+    self.update_path()
+class NoteItem(QGraphicsRectItem):
+
+  def __init__(self, x, y, width, height, word="a", tone="Normal"):
+    super().__init__(0, 0, width, height)
+    self.word = word
+    self.tone = tone
+    self.resizing = False
+    self.transitions = []
+
+    self.setPos(x, y)
+    self.setPen(QPen(QColor("#111116")))
+    self.setBrush(QBrush(QColor("#5555ff")))
+    self.setData(0, "note")
+
+    self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+    self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+    self.setFlag(
+        QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True
+    )
+    self.setAcceptHoverEvents(True)
+
+    self.label = QGraphicsSimpleTextItem(self.word, self)
+    self.label.setBrush(QBrush(QColor("#ffffff")))
+    self.label.setPos(5, 3)
+
+  def set_word(self, new_word):
+    self.word = new_word
+    self.label.setText(new_word)
+
+  def get_pitch_name(self):
+    row = int(round(self.y() / ROW_HEIGHT))
+    row = max(0, min(row, TOTAL_ROWS - 1))
+    note_name = NOTES[row % 12]
+    octave = 7 - (row // 12)
+    return f"{note_name}{octave}"
+
+  def hoverMoveEvent(self, event):
+    if event.pos().x() >= self.rect().width() - RESIZE_MARGIN:
+      self.setCursor(Qt.CursorShape.SizeHorCursor)
+    else:
+      self.setCursor(Qt.CursorShape.ArrowCursor)
+    super().hoverMoveEvent(event)
+
+  def mousePressEvent(self, event):
+    if event.button() == Qt.MouseButton.LeftButton:
+      if event.pos().x() >= self.rect().width() - RESIZE_MARGIN:
+        self.resizing = True
+        self.setSelected(True)
+        event.accept()
+        return
+    super().mousePressEvent(event)
+
+  def mouseMoveEvent(self, event):
+    if self.resizing:
+      raw_width = event.pos().x()
+      snapped_width = max(
+          STEP_WIDTH, round(raw_width / STEP_WIDTH) * STEP_WIDTH
+      )
+      self.setRect(0, 0, snapped_width, self.rect().height())
+      for t in self.transitions:
+        t.update_path()
+      event.accept()
+      return
+    super().mouseMoveEvent(event)
+
+  def mouseReleaseEvent(self, event):
+    if self.resizing:
+      self.resizing = False
+      for t in self.transitions:
+        t.update_path()
+      event.accept()
+      return
+    super().mouseReleaseEvent(event)
+
+  def itemChange(self, change, value):
+    if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+      snapped_x = max(0, round(value.x() / STEP_WIDTH) * STEP_WIDTH)
+      max_y = (TOTAL_ROWS - 1) * ROW_HEIGHT
+      snapped_y = max(0, min(round(value.y() / ROW_HEIGHT) * ROW_HEIGHT, max_y))
+      return QPointF(snapped_x, snapped_y)
+
+    if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+      for t in self.transitions:
+        t.update_path()
+      if self.scene() and hasattr(self.scene(), "on_note_updated"):
+        self.scene().on_note_updated(self)
+
+    return super().itemChange(change, value)
+class PianoRollScene(QGraphicsScene):
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.active_tool = "Select"
+
+  def connect_selected_notes(self):
+    selected_notes = [
+        item for item in self.selectedItems() if isinstance(item, NoteItem)
+    ]
+    if len(selected_notes) != 2:
+      return
+
+    note_a, note_b = sorted(selected_notes, key=lambda n: n.x())
+
+    for existing in note_a.transitions:
+      if existing.note_a is note_a and existing.note_b is note_b:
+        return
+
+    line = TransitionLine(note_a, note_b, mode="curve")
+    self.addItem(line)
+    note_a.transitions.append(line)
+    note_b.transitions.append(line)
+
+  def remove_note_and_transitions(self, note):
+    for t in list(note.transitions):
+      if t in t.note_a.transitions:
+        t.note_a.transitions.remove(t)
+      if t in t.note_b.transitions:
+        t.note_b.transitions.remove(t)
+      if t.scene() == self:
+        self.removeItem(t)
+    self.removeItem(note)
+
+  def mousePressEvent(self, event):
+    pos = event.scenePos()
+    if event.button() == Qt.MouseButton.LeftButton:
+      clicked_item = self.itemAt(pos, QTransform())
+
+      if isinstance(clicked_item, TransitionLine):
+        if self.active_tool == "Eraser":
+          clicked_item.note_a.transitions.remove(clicked_item)
+          clicked_item.note_b.transitions.remove(clicked_item)
+          self.removeItem(clicked_item)
+        else:
+          clicked_item.toggle_mode()
+        event.accept()
+        return
+
+      if self.active_tool == "Pencil":
+        snap_x = (int(pos.x()) // STEP_WIDTH) * STEP_WIDTH
+        snap_y = (int(pos.y()) // ROW_HEIGHT) * ROW_HEIGHT
+        default_width = STEP_WIDTH * STEPS_PER_BEAT
+        note = NoteItem(snap_x, snap_y, default_width, ROW_HEIGHT)
+        self.addItem(note)
+        return
+
+      elif self.active_tool == "Eraser":
+        if clicked_item and not isinstance(clicked_item, NoteItem):
+          clicked_item = clicked_item.parentItem()
+        if isinstance(clicked_item, NoteItem):
+          self.remove_note_and_transitions(clicked_item)
+          return
+
+    super().mousePressEvent(event)
+class ClickablePortrait(QLabel):
+  clicked = pyqtSignal()
+
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.setCursor(Qt.CursorShape.PointingHandCursor)
+    self.setToolTip("Click to select or install a voicebank")
+
+  def mousePressEvent(self, event):
+    if event.button() == Qt.MouseButton.LeftButton:
+      self.clicked.emit()
+    super().mousePressEvent(event)
+class VoicebankSelectorDialog(QDialog):
+
+  def __init__(self, parent=None):
+    super().__init__(parent)
+    self.setWindowTitle("Select Voicebank")
+    self.resize(360, 420)
+    self.setStyleSheet("background-color: #2b2b32; color: #e0e0e0;")
+    self.selected_singer_dir = None
+
+    layout = QVBoxLayout(self)
+
+    info = QLabel("Installed Singers (~/RealSynth/Singers):")
+    info.setStyleSheet("font-weight: bold;")
+    layout.addWidget(info)
+
+    self.list_widget = QListWidget()
+    self.list_widget.setIconSize(QSize(48, 48))
+    self.list_widget.setStyleSheet(
+        "QListWidget { background-color: #222227; border: 1px solid #55555a; }"
+        "QListWidget::item { padding: 6px; }"
+        "QListWidget::item:selected { background-color: #5555ff; }"
+    )
+    self.list_widget.itemDoubleClicked.connect(self.accept_selection)
+    layout.addWidget(self.list_widget)
+
+    btn_row = QHBoxLayout()
+    install_btn = QPushButton("Install New Singer...")
+    select_btn = QPushButton("Load Selected")
+    cancel_btn = QPushButton("Cancel")
+
+    install_btn.clicked.connect(self.install_new)
+    select_btn.clicked.connect(self.accept_selection)
+    cancel_btn.clicked.connect(self.reject)
+
+    btn_row.addWidget(install_btn)
+    btn_row.addStretch()
+    btn_row.addWidget(select_btn)
+    btn_row.addWidget(cancel_btn)
+    layout.addLayout(btn_row)
+
+    self.populate_singers()
+
+  def populate_singers(self):
+    self.list_widget.clear()
+    if not os.path.isdir(SINGERS_ROOT):
+      return
+    for name in sorted(os.listdir(SINGERS_ROOT)):
+      folder = os.path.join(SINGERS_ROOT, name)
+      if os.path.isdir(folder):
+        item = QListWidgetItem(name)
+        item.setData(Qt.ItemDataRole.UserRole, folder)
+        icon_path = os.path.join(folder, "singericon.png")
+        if os.path.isfile(icon_path):
+          item.setIcon(QIcon(icon_path))
+        self.list_widget.addItem(item)
+
+  def install_new(self):
+    load_voicebank()
+    self.populate_singers()
+
+  def accept_selection(self):
+    item = self.list_widget.currentItem()
+    if item:
+      self.selected_singer_dir = item.data(Qt.ItemDataRole.UserRole)
+      self.accept()
+
+
+# setup
+maindaw = QMainWindow()
+maindaw.setWindowTitle("RealSynth v0.0.1 Alpha")
+maindaw.resize(1000, 500)
+
+pickmegirl = QWidget(maindaw)
+maindaw.setCentralWidget(pickmegirl)
+mainlayout = QHBoxLayout(pickmegirl)
+vbarea = QWidget()
+
+menubar = maindaw.menuBar()
+menubar.setStyleSheet("background-color:#222227")
+
+filemenu = menubar.addMenu("File")
+openproject = QAction("Open Project", maindaw)
+filemenu.addAction(openproject)
+saveproject = QAction("Save Project", maindaw)
+filemenu.addAction(saveproject)
+
+loadvoicebank = QAction("Load Voicebank", maindaw)
+filemenu.addAction(loadvoicebank)
+
+editmenu = menubar.addMenu("Edit")
+preferences = QAction("Preferences", maindaw)
+editmenu.addAction(preferences)
+mainlayout.setContentsMargins(0, 0, 0, 0)
+mainlayout.setSpacing(0)
+maindaw.setStyleSheet("background-color:#333338")
+mainlayout.addWidget(vbarea)
+vbarea.setFixedWidth(250)
+vbarea.setStyleSheet("background-color:#444449")
+
+
+
+vblayout = QVBoxLayout(vbarea)
+singerlabel = QLabel("No Singer")
+singerlabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+singerlabel.setStyleSheet("font-size:20px")
+singerportrait = QPixmap(current_singer_dir)
+singerportraitframe = ClickablePortrait()
+singerportraitframe.setScaledContents(True)
+singerportraitframe.setFixedSize(150, 150)
+singerportraitframe.setPixmap(singerportrait)
+singerportraitframe.setStyleSheet(
+    "background-color:#333338; border: 2px solid #55555a;"
+)
+singerlang = QComboBox()
+singerlang.setStyleSheet("background-color:#222227")
+singerlang.addItems(["English", "Japanese", "Spanish", "Chinese", "Portuguese"])
+singermethod = QComboBox()
+singermethod.setStyleSheet("background-color:#222227")
+singermethod.addItems(["VSim"])
+singeroptions = QFormLayout()
+singervol = QSlider(Qt.Orientation.Horizontal)
+singervol.setRange(0, 100)
+singervol.setValue(70)
+singerclar = QSlider(Qt.Orientation.Horizontal)
+singerclar.setRange(0, 100)
+singerclar.setValue(70)
+singeroptions.addRow("Language:", singerlang)
+singeroptions.addRow("Method:", singermethod)
+singeroptions.addRow("Volume", singervol)
+singeroptions.addRow("Clarity", singerclar)
+
+note_box = QGroupBox("Selected Note")
+note_box.setStyleSheet("""
+    QGroupBox {
+        color: #e0e0e0;
+        border: 1px solid #55555a;
+        border-radius: 6px;
+        margin-top: 10px;
+        padding-top: 10px;
+    }
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 10px;
+        padding: 0 4px;
+    }
+""")
+
+note_form = QFormLayout(note_box)
+note_word_input = QLineEdit()
+note_word_input.setPlaceholderText("Type word/phoneme...")
+note_word_input.setStyleSheet("background-color: #222227; padding: 3px;")
+note_pitch_label = QLabel("--")
+note_pitch_label.setStyleSheet("color: #00e08f; font-weight: bold;")
+note_tone_box = QComboBox()
+note_tone_box.setStyleSheet("background-color: #222227;")
+note_tone_box.addItems(["Normal", "Yell", "Soft", "Whisper"])
+
+note_form.addRow("Word / Phoneme:", note_word_input)
+note_form.addRow("Pitch:", note_pitch_label)
+note_form.addRow("Tone:", note_tone_box)
+vblayout.addWidget(singerlabel)
+vblayout.addWidget(singerportraitframe, alignment=Qt.AlignmentFlag.AlignCenter)
+vblayout.addLayout(singeroptions)
+vblayout.addWidget(note_box)
+vblayout.addStretch()
+
+# toolbar
+toolbar_box = QWidget()
+toolbar_box.setFixedHeight(38)
+toolbar_box.setStyleSheet("background-color: #222227;")
+toolbar_row = QHBoxLayout(toolbar_box)
+toolbar_row.setContentsMargins(8, 4, 8, 4)
+toolbar_row.setSpacing(6)
+
+play_btn = QPushButton(
+    maindaw.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay), ""
+)
+pause_btn = QPushButton(
+    maindaw.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause), ""
+)
+stop_btn = QPushButton(
+    maindaw.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop), ""
+)
+toolbar_row.addWidget(play_btn)
+toolbar_row.addWidget(pause_btn)
+toolbar_row.addWidget(stop_btn)
+toolbar_row.addSpacing(20)
+
+bpm_label = QLabel("BPM:")
+bpm_label.setStyleSheet("color: #e0e0e0; margin-right: 4px;")
+bpm_spin = QSpinBox()
+bpm_spin.setRange(40, 300)
+bpm_spin.setValue(120)
+bpm_spin.setStyleSheet("background-color: #333338; color: #e0e0e0; padding: 2px;")
+
+toolbar_row.addWidget(bpm_label)
+toolbar_row.addWidget(bpm_spin)
+
+
+tool_group = QButtonGroup(maindaw)
+tool_group.setExclusive(True)
+select_btn = QPushButton("Select")
+pencil_btn = QPushButton("Pencil")
+eraser_btn = QPushButton("Eraser")
+pan_btn = QPushButton("Pan")
+
+for btn in (select_btn, pencil_btn, eraser_btn, pan_btn):
+  btn.setCheckable(True)
+  tool_group.addButton(btn)
+  toolbar_row.addWidget(btn)
+
+select_btn.setChecked(True)
+toolbar_row.addStretch()
+# piano roll
+keys_scene = QGraphicsScene()
+keys_scene.setSceneRect(0, 0, 60, ROW_HEIGHT * TOTAL_ROWS)
+for row in range(TOTAL_ROWS):
+  y = row * ROW_HEIGHT
+  color = (
+      QBrush(QColor("#3a3a42")) if row % 2 == 0 else QBrush(QColor("#484852"))
+  )
+  keys_scene.addRect(0, y, 60, ROW_HEIGHT, QPen(Qt.PenStyle.NoPen), color)
+  note_name = NOTES[row % 12]
+  octave = 7 - (row // 12)
+  label = keys_scene.addText(f"{note_name}{octave}")
+  label.setDefaultTextColor(QColor("#e0e0e0"))
+  label.setPos(8, y)
+
+keys_view = QGraphicsView(keys_scene)
+keys_view.setFixedWidth(60)
+keys_view.setStyleSheet("background-color: #2f2f35; border: none;")
+keys_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+keys_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+roll_scene = PianoRollScene()
+roll_scene.setSceneRect(0, 0, ROLL_WIDTH, ROW_HEIGHT * TOTAL_ROWS)
+
+ruler_scene = QGraphicsScene()
+ruler_scene.setSceneRect(0, 0, ROLL_WIDTH, 24)
+ruler_view = QGraphicsView(ruler_scene)
+ruler_view.setFixedHeight(24)
+ruler_view.setStyleSheet("background-color: #222227; border: none;")
+ruler_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+ruler_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+roll_view = QGraphicsView(roll_scene)
+roll_view.setStyleSheet("border: none;")
+roll_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+roll_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+roll_view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+
+
+def set_tool(tool_name):
+  roll_scene.active_tool = tool_name
+  if tool_name == "Pan":
+    roll_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+  elif tool_name == "Select":
+    roll_view.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+  else:
+    roll_view.setDragMode(QGraphicsView.DragMode.NoDrag)
+
+
+select_btn.clicked.connect(lambda: set_tool("Select"))
+pencil_btn.clicked.connect(lambda: set_tool("Pencil"))
+eraser_btn.clicked.connect(lambda: set_tool("Eraser"))
+pan_btn.clicked.connect(lambda: set_tool("Pan"))
+
+link_shortcut = QShortcut(QKeySequence("L"), maindaw)
+link_shortcut.activated.connect(roll_scene.connect_selected_notes)
+
+roll_view.verticalScrollBar().valueChanged.connect(
+    keys_view.verticalScrollBar().setValue
+)
+keys_view.verticalScrollBar().valueChanged.connect(
+    roll_view.verticalScrollBar().setValue
+)
+
+def open_voicebank_selector():
+  dlg = VoicebankSelectorDialog(maindaw)
+  if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_singer_dir:
+    apply_voicebank(dlg.selected_singer_dir)
+
+
+singerportraitframe.clicked.connect(open_voicebank_selector)
+
+def refresh_note_inspector(note=None):
+  if note is None:
+    selected = roll_scene.selectedItems()
+    note = selected[0] if selected else None
+
+  if isinstance(note, NoteItem):
+    note_word_input.blockSignals(True)
+    note_tone_box.blockSignals(True)
+    note_word_input.setText(note.word)
+    note_pitch_label.setText(note.get_pitch_name())
+    note_tone_box.setCurrentText(note.tone)
+    note_word_input.blockSignals(False)
+    note_tone_box.blockSignals(False)
+  else:
+    note_word_input.clear()
+    note_pitch_label.setText("--")
+    note_tone_box.setCurrentIndex(0)
+
+
+roll_scene.selectionChanged.connect(refresh_note_inspector)
+roll_scene.on_note_updated = refresh_note_inspector
+
+
+def apply_word_edit(text):
+  selected = roll_scene.selectedItems()
+  if selected and isinstance(selected[0], NoteItem):
+    selected[0].set_word(text)
+
+
+def apply_tone_edit(text):
+  selected = roll_scene.selectedItems()
+  if selected and isinstance(selected[0], NoteItem):
+    selected[0].tone = text
+
+
+note_word_input.textChanged.connect(apply_word_edit)
+note_tone_box.currentTextChanged.connect(apply_tone_edit)
+
+dawcontainer = QWidget()
+dawlayout = QVBoxLayout(dawcontainer)
+dawlayout.setContentsMargins(0, 0, 0, 0)
+dawlayout.setSpacing(0)
+
+views_row = QHBoxLayout()
+views_row.setContentsMargins(0, 0, 0, 0)
+views_row.setSpacing(0)
+views_row.addWidget(roll_view)
+views_row.addWidget(keys_view)
+
+shared_hbar = QScrollBar(Qt.Orientation.Horizontal)
+roll_view.horizontalScrollBar().rangeChanged.connect(shared_hbar.setRange)
+shared_hbar.valueChanged.connect(roll_view.horizontalScrollBar().setValue)
+roll_view.horizontalScrollBar().valueChanged.connect(shared_hbar.setValue)
+roll_view.horizontalScrollBar().valueChanged.connect(
+    ruler_view.horizontalScrollBar().setValue
+)
+
+
+def extend_timeline(new_total_steps):
+  global drawn_steps
+  if new_total_steps <= drawn_steps:
+    return
+
+  new_width = new_total_steps * STEP_WIDTH
+  roll_scene.setSceneRect(0, 0, new_width, ROW_HEIGHT * TOTAL_ROWS)
+  ruler_scene.setSceneRect(0, 0, new_width, 24)
+
+  start_x = drawn_steps * STEP_WIDTH
+  chunk_width = (new_total_steps - drawn_steps) * STEP_WIDTH
+  for row in range(TOTAL_ROWS):
+    y = row * ROW_HEIGHT
+    color = (
+        QBrush(QColor("#28282e")) if row % 2 == 0 else QBrush(QColor("#303036"))
+    )
+    bg = roll_scene.addRect(
+        start_x, y, chunk_width, ROW_HEIGHT, QPen(Qt.PenStyle.NoPen), color
+    )
+    bg.setZValue(-2)
+    bg.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+  for step in range(drawn_steps, new_total_steps):
+    x = step * STEP_WIDTH
+    if step % STEPS_PER_BAR == 0:
+      pen = QPen(QColor("#555564"))
+    elif step % STEPS_PER_BEAT == 0:
+      pen = QPen(QColor("#3e3e48"))
+    else:
+      pen = QPen(QColor("#2f2f37"))
+    line = roll_scene.addLine(x, 0, x, ROW_HEIGHT * TOTAL_ROWS, pen)
+    line.setZValue(-1)
+    line.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+
+    if step % STEPS_PER_BAR == 0:
+      bar_num = (step // STEPS_PER_BAR) + 1
+      ruler_scene.addLine(x, 0, x, 24, QPen(QColor("#888899")))
+      txt = ruler_scene.addText(str(bar_num))
+      txt.setDefaultTextColor(QColor("#e0e0e0"))
+      txt.setPos(x + 3, 0)
+    elif step % STEPS_PER_BEAT == 0:
+      bar_num = (step // STEPS_PER_BAR) + 1
+      beat_num = ((step % STEPS_PER_BAR) // STEPS_PER_BEAT) + 1
+      ruler_scene.addLine(x, 10, x, 24, QPen(QColor("#666677")))
+      txt = ruler_scene.addText(f"{bar_num}.{beat_num}")
+      txt.setDefaultTextColor(QColor("#9999aa"))
+      txt.setPos(x + 2, 2)
+    else:
+      ruler_scene.addLine(x, 17, x, 24, QPen(QColor("#484854")))
+
+  drawn_steps = new_total_steps
+
+
+extend_timeline(128)
+
+
+def check_infinite_scroll(val):
+  if shared_hbar.maximum() > 0 and val >= shared_hbar.maximum() - 300:
+    extend_timeline(drawn_steps + 64)
+
+
+shared_hbar.valueChanged.connect(check_infinite_scroll)
+
+roll_view.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+ruler_view.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+keys_view.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+dawlayout.addWidget(toolbar_box)
+dawlayout.addWidget(ruler_view)
+dawlayout.addLayout(views_row)
+dawlayout.addWidget(shared_hbar)
+mainlayout.addWidget(dawcontainer)
+
+playhead_roll = roll_scene.addLine(
+    0, 0, 0, ROW_HEIGHT * TOTAL_ROWS, QPen(QColor("#ff4455"), 2)
+)
+playhead_roll.setZValue(10)
+
+playhead_ruler = ruler_scene.addLine(0, 0, 0, 24, QPen(QColor("#ff4455"), 2))
+playhead_ruler.setZValue(10)
+
+audio_output = QAudioOutput()
+audio_output.setVolume(1.0)
+media_player = QMediaPlayer()
+media_player.setAudioOutput(audio_output)
+
+is_paused = False
+temp_wav_path = os.path.join(os.path.expanduser("~"), "RealSynth", "preview.wav")
+
+
+def get_current_project_dict():
+  notes = [item for item in roll_scene.items() if isinstance(item, NoteItem)]
+  notes.sort(key=lambda n: (n.x(), n.y()))
+  note_to_idx = {note: i for i, note in enumerate(notes)}
+
+  notes_data = [
+      {
+          "x": n.x(),
+          "y": n.y(),
+          "width": n.rect().width(),
+          "word": n.word,
+          "tone": n.tone,
+      }
+      for n in notes
+  ]
+
+  transitions = [
+      item for item in roll_scene.items() if isinstance(item, TransitionLine)
+  ]
+  transitions_data = [
+      {
+          "from_note": note_to_idx[t.note_a],
+          "to_note": note_to_idx[t.note_b],
+          "mode": t.mode,
+      }
+      for t in transitions
+      if t.note_a in note_to_idx and t.note_b in note_to_idx
+  ]
+
+  return {
+      "singer": {
+          "singerdir": current_singer_dir,
+          "language": singerlang.currentText(),
+          "method": singermethod.currentText(),
+          "volume": singervol.value(),
+          "clarity": singerclar.value(),
+      },
+      "notes": notes_data,
+      "transitions": transitions_data,
+  }
+playhead_timer = QTimer()
+playhead_timer.setInterval(16)
+
+
+def update_playhead():
+  if media_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+    return
+  pos_ms = media_player.position()
+  bpm = bpm_spin.value()
+  px_per_sec = (bpm / 60.0) * STEPS_PER_BEAT * STEP_WIDTH
+  x_pos = (pos_ms / 1000.0) * px_per_sec
+
+  playhead_roll.setLine(x_pos, 0, x_pos, ROW_HEIGHT * TOTAL_ROWS)
+  playhead_ruler.setLine(x_pos, 0, x_pos, 24)
+
+
+playhead_timer.timeout.connect(update_playhead)
+
+
+def on_media_status_changed(status):
+  if status == QMediaPlayer.MediaStatus.EndOfMedia:
+    stop_playback()
+
+
+media_player.mediaStatusChanged.connect(on_media_status_changed)
+
+
+def start_playback():
+  global is_paused
+  if is_paused:
+    is_paused = False
+    media_player.play()
+    playhead_timer.start()
+    return
+
+  media_player.stop()
+  media_player.setSource(QUrl())
+
+  project_data = get_current_project_dict()
+  if not project_data["notes"]:
+    return
+
+  rendered = VSim.render_project(
+      project_data, output_wav=temp_wav_path, bpm=bpm_spin.value()
+  )
+  if rendered and os.path.isfile(rendered):
+    media_player.setSource(QUrl.fromLocalFile(rendered))
+    media_player.play()
+    playhead_timer.start()
+
+def export_audio():
+  current_project = get_current_project_dict()
+  if not current_project.get("notes"):
+    QMessageBox.warning(
+        maindaw, "Empty Project", "Add some notes before exporting."
+    )
+    return
+
+  save_path, _ = QFileDialog.getSaveFileName(
+      maindaw,
+      "Export Rendered Audio",
+      "output.wav",
+      "WAV Audio (*.wav);;All Files (*)",
+  )
+  if not save_path:
+    return
+
+  if not save_path.lower().endswith(".wav"):
+    save_path += ".wav"
+
+  rendered = VSim.render_project(
+      current_project,
+      output_wav=save_path,
+      bpm=bpm_spin.value(),
+  )
+
+  if rendered:
+    QMessageBox.information(
+        maindaw,
+        "Export Complete",
+        f"Successfully exported wav to:\n{rendered}",
+    )
+
+export_action = filemenu.addAction("Export to wax")
+export_action.setShortcut("Ctrl+E")
+export_action.triggered.connect(export_audio)
+
+def pause_playback():
+  global is_paused
+  if media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+    media_player.pause()
+    playhead_timer.stop()
+    is_paused = True
+
+
+def stop_playback():
+  global is_paused
+  is_paused = False
+  media_player.stop()
+  playhead_timer.stop()
+  playhead_roll.setLine(0, 0, 0, ROW_HEIGHT * TOTAL_ROWS)
+  playhead_ruler.setLine(0, 0, 0, 24)
+
+
+play_btn.clicked.connect(start_playback)
+pause_btn.clicked.connect(pause_playback)
+stop_btn.clicked.connect(stop_playback)
+
+
+saveproject.setShortcut(QKeySequence("Ctrl+S"))
+openproject.setShortcut(QKeySequence("Ctrl+O"))
+saveproject.triggered.connect(save_project)
+openproject.triggered.connect(open_project)
+loadvoicebank.triggered.connect(load_voicebank)
+
+maindaw.show()
+sys.exit(app.exec())
