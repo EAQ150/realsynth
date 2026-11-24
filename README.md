@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.svg" alt="RealSynth Logo" width="400">
+  <img src="logo.png" alt="RealSynth Logo" width="400">
 </p>
 <hr>
 <h2>RealSynth Introduction</h2>
