@@ -10,6 +10,7 @@ from PyQt6.QtGui import *
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import *
 import VSim
+import webbrowser
 
 base_dir = Path(__file__).resolve().parent
 pencil_path = str(base_dir / "assets" / "images" / "pencil.svg")
@@ -17,7 +18,7 @@ eraser_path = str(base_dir / "assets" / "images" / "eraser.svg")
 select_path = str(base_dir / "assets" / "images" / "select.svg")
 pan_path = str(base_dir / "assets" / "images" / "pan.svg")
 link_path = str(base_dir / "assets" / "images" / "link.svg")
-icon_path = base_dir / "logo.svg"
+icon_path = base_dir / "logo.png"
 
 app = QApplication(sys.argv)
 app.setWindowIcon(QIcon(str(icon_path)))
@@ -1259,6 +1260,54 @@ class PreferencesDialog(QDialog):
     refresh_canvas_colors()
     save_config(app_config)
     self.accept()
+
+class HelpDialog(QDialog):
+
+  def __init__(self, parent=None):
+    super().__init__(parent)
+    self.setWindowTitle("Help")
+    self.resize(500, 380)
+
+    helpwindow = QVBoxLayout(self)
+    tabs = QTabWidget()
+
+    # --- Tab 1: Tools (Scrollable) ---
+    tab1_scroll = QScrollArea()
+    tab1_scroll.setWidgetResizable(True)
+    tab1_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+    tab1_content = QWidget()
+    tab1_layout = QVBoxLayout(tab1_content)
+
+    helptext = QLabel()
+    helptext.setAlignment(Qt.AlignmentFlag.AlignTop)
+    helptext.setWordWrap(True)
+    helptext.setText("""
+            There are 5 essential tools in RealSynth that you need to know about: Select, Pencil, Eraser, Pan, and Link tools. This page goes over the uses of each of them.
+
+            Select: This tool lets you select, move, and edit one or more notes. You can't bulk edit notes, so you'll have to edit them individually.
+
+            Pencil: This tool lets you create notes wherever you click.
+
+            Eraser: This tool erases the topmost note in the clicked spot.
+
+            Pan: This tool lets you drag on the board to shift your view. It's incredibly essential.
+
+            Link: This is not a separate tool, but pressing this button will link two selected notes together. Pressing the newly made link will change it from a linear link to a curve link and vice versa.
+        """)
+
+    tab1_layout.addWidget(helptext)
+    tab1_scroll.setWidget(tab1_content)
+
+    tab2 = QWidget()
+    tab2_layout = QVBoxLayout(tab2)
+
+    tabs.addTab(tab1_scroll, "Tools")
+    tabs.addTab(tab2, "Other")
+    helpwindow.addWidget(tabs)
+
+    
+
 maindaw = QMainWindow()
 maindaw.setWindowTitle("RealSynth v0.0.1 Beta")
 maindaw.resize(1000, 500)
@@ -1275,13 +1324,25 @@ openproject = QAction("Open Project", maindaw)
 filemenu.addAction(openproject)
 saveproject = QAction("Save Project", maindaw)
 filemenu.addAction(saveproject)
-
 loadvoicebank = QAction("Load Voicebank", maindaw)
 filemenu.addAction(loadvoicebank)
+export_action = filemenu.addAction("Export as WAV")
+export_action.setShortcut("Ctrl+E")
+quitapp = QAction("Quit App", maindaw)
+filemenu.addAction(quitapp)
 
 editmenu = menubar.addMenu("Edit")
 preferences = QAction("Preferences", maindaw)
 editmenu.addAction(preferences)
+
+helpmenu = menubar.addMenu("Help")
+openhelp = QAction("Open Help", maindaw)
+helpmenu.addAction(openhelp)
+
+moremenu = menubar.addMenu("More")
+viewgithub = QAction("View GitHub Repository", maindaw)
+moremenu.addAction(viewgithub)
+
 mainlayout.setContentsMargins(0, 0, 0, 0)
 mainlayout.setSpacing(0)
 mainlayout.addWidget(vbarea)
@@ -1298,7 +1359,7 @@ singerportraitframe.setFixedSize(150, 150)
 singerportraitframe.setPixmap(singerportrait)
 singerportraitframe.setStyleSheet("border: 2px solid #55555a;")
 singerlang = QComboBox()
-singerlang.addItems(["English", "Japanese", "Spanish", "Chinese", "Portuguese"])
+singerlang.addItems(["English", "Japanese"])
 singermethod = QComboBox()
 singermethod.addItems(["VSim"])
 singeroptions = QFormLayout()
@@ -1748,12 +1809,6 @@ def export_audio():
         f"Successfully exported wav to:\n{rendered}",
     )
 
-
-export_action = filemenu.addAction("Export to wax")
-export_action.setShortcut("Ctrl+E")
-export_action.triggered.connect(export_audio)
-
-
 def pause_playback():
   global is_paused
   if media_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -1775,6 +1830,15 @@ def open_preferences():
   dlg = PreferencesDialog(maindaw)
   dlg.exec()
 
+def open_help():
+  dlg = HelpDialog(maindaw)
+  dlg.exec()
+
+def open_github():
+  webbrowser.open("https://github.com/EAQ150/realsynth")
+
+def quit_app():
+  sys.exit()
 
 play_btn.clicked.connect(start_playback)
 pause_btn.clicked.connect(pause_playback)
@@ -1782,11 +1846,17 @@ stop_btn.clicked.connect(stop_playback)
 
 saveproject.setShortcut(QKeySequence("Ctrl+S"))
 openproject.setShortcut(QKeySequence("Ctrl+O"))
+loadvoicebank.setShortcut(QKeySequence("Ctrl+L"))
 preferences.setShortcut(QKeySequence("Ctrl+,"))
+openhelp.setShortcut(QKeySequence("Ctrl+H"))
 saveproject.triggered.connect(save_project)
 openproject.triggered.connect(open_project)
 loadvoicebank.triggered.connect(load_voicebank)
+export_action.triggered.connect(export_audio)
+quitapp.triggered.connect(quit_app)
 preferences.triggered.connect(open_preferences)
+openhelp.triggered.connect(open_help)
+viewgithub.triggered.connect(open_github)
 
 maindaw.show()
 sys.exit(app.exec())
