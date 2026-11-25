@@ -12,6 +12,6 @@ RealSynth creates sound by taking a base wave and also 5 different formants, bei
 <ul>
   <li>友音ユト Voicebank Art: Waddle250</li>
   <li>VSim: Me</li>
-  <li>RealSynth: Me</li>
+  <li>RealSynth: Me & Waddle250</li>
   <li>Logo: Me</li>
 </ul>
