@@ -10,4 +10,4 @@ RealSynth creates sound by taking a base wave and also 5 different formants, bei
 <br><br>
 <h2>Credit</h2>
 <li>EAQ150: Project Lead / Main Developer / Engine Maintenence</li>
-<li>Waddle250: DAW Developer</li>
+<li>Waddle250: DAW Developer / Art</li>
