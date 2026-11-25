@@ -86,6 +86,15 @@ THEME_PRESETS = {
             "note_color": "#6dbee7",
             "playhead_color": "#AC302C",
         },
+    "The Void": {
+            "bg_color": "#000000",
+            "surface_color": "#000000",
+            "border_color": "#111111",
+            "text_color": "#f5f3ff",
+            "accent_color": "#333333",
+            "note_color": "#222222",
+            "playhead_color": "#ffffff",
+        },
 }
 
 
@@ -212,6 +221,7 @@ QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBo
     border: 1px solid {accent};
 }}
 """
+
 def build_stylesheet_part_b(bg, surface, border, text, accent, accent_light):
   up_svg = (
       "data:image/svg+xml;utf8,"
@@ -726,7 +736,7 @@ class NoteItem(QGraphicsRectItem):
     self.transitions = []
 
     self.setPos(x, y)
-    self.setPen(QPen(QColor("#111116")))
+    self.setPen(QPen(QColor(app_config["note_color"])))
     self.setBrush(QBrush(QColor(app_config["note_color"])))
     self.setData(0, "note")
 
